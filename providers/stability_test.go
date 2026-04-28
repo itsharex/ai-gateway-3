@@ -21,6 +21,7 @@ import (
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	ollamacloudpkg "github.com/ferro-labs/ai-gateway/providers/ollama_cloud"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
@@ -51,6 +52,11 @@ type providerNameStabilityCase struct {
 }
 
 func providerNameStabilityCases() []providerNameStabilityCase {
+	cases := providerNameStabilityCoreCases()
+	return append(cases, providerNameStabilityExtensionCases()...)
+}
+
+func providerNameStabilityCoreCases() []providerNameStabilityCase {
 	return []providerNameStabilityCase{
 		{
 			wantName: NameAI21,
@@ -217,6 +223,11 @@ func providerNameStabilityCases() []providerNameStabilityCase {
 				return p
 			},
 		},
+	}
+}
+
+func providerNameStabilityExtensionCases() []providerNameStabilityCase {
+	return []providerNameStabilityCase{
 		{
 			wantName: NameMistral,
 			build: func(t *testing.T) Provider {
@@ -268,6 +279,17 @@ func providerNameStabilityCases() []providerNameStabilityCase {
 				p, err := ollamapkg.New("http://localhost:11434", nil)
 				if err != nil {
 					t.Fatalf("NewOllama: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameOllamaCloud,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := ollamacloudpkg.New(testAPIKey, "", []string{"gpt-oss:20b"})
+				if err != nil {
+					t.Fatalf("NewOllamaCloud: %v", err)
 				}
 				return p
 			},
@@ -451,6 +473,21 @@ func TestProviderCapabilitiesNotEmpty(t *testing.T) {
 		if !hasChat {
 			t.Errorf("provider %q is missing %q capability", e.ID, CapabilityChat)
 		}
+	}
+}
+
+// TestProviderEmbedCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional EmbeddingProvider interface used by /v1/embeddings routing.
+func TestProviderEmbedCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(EmbeddingProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityEmbed)
+			if implements != declares {
+				t.Errorf("provider %q embed capability mismatch: implements EmbeddingProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityEmbed, declares)
+			}
+		})
 	}
 }
 

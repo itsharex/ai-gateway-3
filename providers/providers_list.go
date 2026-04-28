@@ -24,6 +24,7 @@ import (
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	ollamacloudpkg "github.com/ferro-labs/ai-gateway/providers/ollama_cloud"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
@@ -97,7 +98,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameBedrock,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		// All Bedrock env mappings are optional because the provider can be
 		// configured in two different ways:
 		//   1. Instance-role / credential-chain auth: only AWS_REGION is set.
@@ -149,7 +150,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameCohere,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy, CapabilityEmbed},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "COHERE_API_KEY", true},
 			{CfgKeyBaseURL, "COHERE_BASE_URL", false},
@@ -160,7 +161,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameDatabricks,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "DATABRICKS_TOKEN", true},
 			{CfgKeyBaseURL, "DATABRICKS_HOST", true},
@@ -193,7 +194,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameFireworks,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "FIREWORKS_API_KEY", true},
 			{CfgKeyBaseURL, "FIREWORKS_BASE_URL", false},
@@ -204,7 +205,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameGemini,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "GEMINI_API_KEY", true},
 			{CfgKeyBaseURL, "GEMINI_BASE_URL", false},
@@ -237,7 +238,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameMistral,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "MISTRAL_API_KEY", true},
 			{CfgKeyBaseURL, "MISTRAL_BASE_URL", false},
@@ -259,7 +260,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNovita,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NOVITA_API_KEY", true},
 			{CfgKeyBaseURL, "NOVITA_BASE_URL", false},
@@ -293,6 +294,22 @@ var allProviders = []ProviderEntry{
 				models = strings.Split(m, ",")
 			}
 			return ollamapkg.New(cfg[CfgKeyHost], models)
+		},
+	},
+	{
+		ID:           NameOllamaCloud,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "OLLAMA_API_KEY", true},
+			{CfgKeyBaseURL, "OLLAMA_CLOUD_BASE_URL", false},
+			{CfgKeyModels, "OLLAMA_CLOUD_MODELS", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			var models []string
+			if m := cfg[CfgKeyModels]; m != "" {
+				models = strings.Split(m, ",")
+			}
+			return ollamacloudpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], models)
 		},
 	},
 	{
@@ -373,7 +390,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameTogether,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "TOGETHER_API_KEY", true},
 			{CfgKeyBaseURL, "TOGETHER_BASE_URL", false},
@@ -384,7 +401,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameVertexAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		// project_id is the gate: if unset, skip silently.
 		// region plus one of api_key / service_account_json are required once
 		// project_id is present.
