@@ -1212,6 +1212,78 @@ func TestShouldRecordCircuitBreakerFailure(t *testing.T) {
 	}
 }
 
+func TestGateway_CircuitBreaker_ReleasesHalfOpenProbeForIgnoredRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{
+			{
+				VirtualKey: mockProviderName,
+				CircuitBreaker: &CircuitBreakerConfig{
+					FailureThreshold: 1,
+					SuccessThreshold: 1,
+					MaxHalfThreshold: 1,
+					Timeout:          "1ms",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			switch calls.Add(1) {
+			case 1:
+				return nil, errors.New("provider API error (500): unavailable")
+			case 2:
+				return nil, errors.New("provider API error (429): rate limited")
+			default:
+				return &providers.Response{ID: "recovered", Model: "gpt-4o"}, nil
+			}
+		},
+	})
+
+	req := providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+	if _, err := gw.Route(context.Background(), req); err == nil {
+		t.Fatal("expected first provider failure to open the circuit")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := gw.Route(context.Background(), req); err == nil || !isRateLimitError(err) {
+		t.Fatalf("expected ignored 429 from half-open probe, got %v", err)
+	}
+	resp, err := gw.Route(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected released half-open slot to allow recovery probe, got %v", err)
+	}
+	if resp.ID != "recovered" {
+		t.Fatalf("response ID = %q, want recovered", resp.ID)
+	}
+}
+
+func TestRecordStreamCircuitBreakerOutcome_ReleasesHalfOpenProbeForClientCancel(t *testing.T) {
+	cb := circuitbreaker.New(1, 1, 1, 1*time.Millisecond)
+	cb.RecordFailure()
+	time.Sleep(5 * time.Millisecond)
+	_ = cb.State()
+	if !cb.Allow() {
+		t.Fatal("expected first half-open stream probe allowed")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recordStreamCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
+
+	if cb.State() != circuitbreaker.StateHalfOpen {
+		t.Fatalf("expected ignored client cancel to keep half-open state, got %s", cb.State())
+	}
+	if !cb.Allow() {
+		t.Fatal("expected ignored stream outcome to release half-open probe slot")
+	}
+}
+
 func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T) {
 	var selected atomic.Value
 	gw, err := New(Config{
@@ -1670,6 +1742,52 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 	}
 	if !sawPluginErr {
 		t.Fatal("expected stream chunk carrying after plugin rejection error")
+	}
+	if onErrorCalls != 1 {
+		t.Fatalf("on-error plugin calls = %d, want 1", onErrorCalls)
+	}
+}
+
+func TestGateway_Route_AfterPluginRejectRunsOnError(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		resp:   &providers.Response{ID: "r1", Model: "gpt-4o", Provider: mockProviderName},
+	})
+
+	var onErrorCalls int
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "after",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			pctx.Reject = true
+			pctx.Reason = "after plugin rejected"
+			return nil
+		},
+	})
+	_ = gw.RegisterPlugin(plugin.StageOnError, &testPlugin{
+		name: "on-error",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			onErrorCalls++
+			var rejection *plugin.RejectionError
+			if !errors.As(pctx.Error, &rejection) {
+				t.Fatalf("on-error plugin error = %T(%v), want *plugin.RejectionError", pctx.Error, pctx.Error)
+			}
+			return nil
+		},
+	})
+
+	_, err := gw.Route(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected after plugin rejection")
 	}
 	if onErrorCalls != 1 {
 		t.Fatalf("on-error plugin calls = %d, want 1", onErrorCalls)
@@ -2453,9 +2571,10 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 
 // testPlugin is a mock plugin for gateway tests.
 type testPlugin struct {
-	name   string
-	typ    plugin.PluginType
-	execFn func(ctx context.Context, pctx *plugin.Context) error
+	name    string
+	typ     plugin.PluginType
+	execFn  func(ctx context.Context, pctx *plugin.Context) error
+	closeFn func() error
 }
 
 func (p *testPlugin) Name() string              { return p.name }
@@ -2464,6 +2583,12 @@ func (p *testPlugin) Init(map[string]any) error { return nil }
 func (p *testPlugin) Execute(ctx context.Context, pctx *plugin.Context) error {
 	if p.execFn != nil {
 		return p.execFn(ctx, pctx)
+	}
+	return nil
+}
+func (p *testPlugin) Close() error {
+	if p.closeFn != nil {
+		return p.closeFn()
 	}
 	return nil
 }
@@ -2586,6 +2711,135 @@ func TestGateway_LoadPlugins_UnknownPlugin(t *testing.T) {
 	}
 	if got := err.Error(); got != "unknown plugin: does-not-exist" {
 		t.Errorf("got error %q, want %q", got, "unknown plugin: does-not-exist")
+	}
+}
+
+func TestGateway_ReloadConfig_ClosesOldPlugins(t *testing.T) {
+	var oldClosed atomic.Int32
+	plugin.RegisterFactory("test-close-plugin", func() plugin.Plugin {
+		return &testPlugin{
+			name: "test-close-plugin",
+			typ:  plugin.TypeLogging,
+			closeFn: func() error {
+				oldClosed.Add(1)
+				return nil
+			},
+		}
+	})
+
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+		Plugins: []PluginConfig{
+			{
+				Name:    "test-close-plugin",
+				Type:    "logging",
+				Stage:   "after_request",
+				Enabled: true,
+				Config:  map[string]any{},
+			},
+		},
+	})
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins failed: %v", err)
+	}
+
+	if err := gw.ReloadConfig(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	}); err != nil {
+		t.Fatalf("ReloadConfig failed: %v", err)
+	}
+	if got := oldClosed.Load(); got != 1 {
+		t.Fatalf("old plugin closes = %d, want 1", got)
+	}
+	if gw.plugins.HasPlugins() {
+		t.Fatal("expected reload without plugin configs to clear registered plugins")
+	}
+}
+
+func TestGateway_ReloadConfig_DefersOldPluginCloseUntilInFlightRouteFinishes(t *testing.T) {
+	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: provider.Name()}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	gw.RegisterProvider(provider)
+
+	oldClosed := make(chan struct{})
+	var closeOnce sync.Once
+	afterRan := make(chan struct{})
+	var afterOnce sync.Once
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "in-flight-after",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			afterOnce.Do(func() { close(afterRan) })
+			return nil
+		},
+		closeFn: func() error {
+			closeOnce.Do(func() { close(oldClosed) })
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+
+	routeDone := make(chan error, 1)
+	go func() {
+		_, routeErr := gw.Route(context.Background(), providers.Request{
+			Model:    "gpt-4o",
+			Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		})
+		routeDone <- routeErr
+	}()
+
+	provider.waitActive(t, 1)
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- gw.ReloadConfig(Config{
+			Strategy: StrategyConfig{Mode: ModeSingle},
+			Targets:  []Target{{VirtualKey: provider.Name()}},
+		})
+	}()
+
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("ReloadConfig: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reload blocked behind in-flight route")
+	}
+	select {
+	case <-oldClosed:
+		t.Fatal("old plugin manager closed while an in-flight route could still run after/error plugins")
+	default:
+	}
+
+	provider.releaseAll()
+
+	select {
+	case err := <-routeDone:
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for route")
+	}
+	select {
+	case <-afterRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for after plugin")
+	}
+	select {
+	case <-oldClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for old plugin close")
 	}
 }
 
@@ -3284,6 +3538,97 @@ func BenchmarkFindByModel(b *testing.B) {
 		if _, ok := gw.FindByModel("gpt-4o"); !ok {
 			b.Fatal("expected model lookup to succeed")
 		}
+	}
+}
+
+// blockAfterFirstMock fails on its first Complete call (to trip the circuit
+// breaker) and blocks on the second call until release is closed — used to
+// hold a half-open probe slot while a concurrent request tests the cap.
+type blockAfterFirstMock struct {
+	mockProvider
+	callN   atomic.Int32
+	ready   chan struct{} // closed when the second call enters Complete
+	release chan struct{} // closed to let the second call return
+}
+
+func (m *blockAfterFirstMock) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
+	if n := m.callN.Add(1); n == 1 {
+		return nil, errors.New("provider down")
+	}
+	close(m.ready)
+	<-m.release
+	return m.resp, nil
+}
+
+// TestGateway_CircuitBreaker_MaxHalfThreshold_FromConfig verifies that the
+// MaxHalfThreshold value in CircuitBreakerConfig is wired into the circuit
+// breaker: while one half-open probe is in-flight, a concurrent request must
+// be rejected with ErrCircuitOpen.
+func TestGateway_CircuitBreaker_MaxHalfThreshold_FromConfig(t *testing.T) {
+	mock := &blockAfterFirstMock{
+		mockProvider: mockProvider{
+			name:   "mock-cb",
+			models: []string{"gpt-4o"},
+			resp:   &providers.Response{ID: "ok", Model: "gpt-4o"},
+		},
+		ready:   make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "mock-cb",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 1,
+				SuccessThreshold: 1,
+				MaxHalfThreshold: 1,
+				Timeout:          "1ms",
+			},
+		}},
+	})
+	gw.RegisterProvider(mock)
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+
+	// Trip the circuit: first call fails → circuit opens.
+	_, _ = gw.Route(context.Background(), req)
+
+	// Wait for half-open transition.
+	time.Sleep(5 * time.Millisecond)
+
+	// Probe 1: admitted into half-open, blocks inside provider holding the slot.
+	probe1Err := make(chan error, 1)
+	go func() {
+		_, err := gw.Route(context.Background(), req)
+		probe1Err <- err
+	}()
+
+	// Wait until probe 1 is holding the in-flight slot (halfOpenProbes=1).
+	select {
+	case <-mock.ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for probe 1 to enter provider")
+	}
+
+	// Probe 2: cap=1 already consumed → must be rejected.
+	_, err := gw.Route(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Errorf("expected ErrCircuitOpen for second concurrent half-open probe, got %v", err)
+	}
+
+	// Release probe 1 and verify it succeeds.
+	close(mock.release)
+	select {
+	case err := <-probe1Err:
+		if err != nil {
+			t.Errorf("probe 1 expected success, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for probe 1 to complete")
 	}
 }
 

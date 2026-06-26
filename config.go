@@ -95,10 +95,11 @@ type TracingConfig struct {
 	// PrivacyLevel controls whether prompt/response content is exported.
 	// One of: "none", "metadata" (default), "full".
 	PrivacyLevel string `json:"privacy_level,omitempty" yaml:"privacy_level,omitempty"`
-	// ShutdownGrace is the maximum time the gateway waits for in-flight
-	// OTel exports to drain during graceful shutdown. Accepts any Go
-	// duration string, e.g. "10s", "500ms". Defaults to 10s when empty
-	// or unparseable.
+	// ShutdownGrace is the maximum time each OTel shutdown stage waits.
+	// Exporter shutdown and TracerProvider shutdown each receive this
+	// budget, so total telemetry shutdown may take up to twice this value.
+	// Accepts any Go duration string, e.g. "10s", "500ms". Defaults to 10s
+	// when empty or unparseable.
 	ShutdownGrace string `json:"shutdown_grace,omitempty" yaml:"shutdown_grace,omitempty"`
 	// Headers are additional HTTP/gRPC metadata headers sent with every OTLP
 	// export request. Use this to authenticate with managed backends such as
@@ -221,6 +222,9 @@ type CircuitBreakerConfig struct {
 	// SuccessThreshold is the number of consecutive successes in half-open state
 	// required to close the circuit. Defaults to 1.
 	SuccessThreshold int `json:"success_threshold" yaml:"success_threshold"`
+	// MaxHalfThreshold is the maximum number of concurrent in-flight probes
+	// allowed while the circuit is half-open. Zero or negative values default to 1.
+	MaxHalfThreshold int `json:"max_half_threshold" yaml:"max_half_threshold"`
 	// Timeout is the duration the circuit stays open before transitioning to
 	// half-open (e.g. "30s"). Defaults to "30s".
 	Timeout string `json:"timeout" yaml:"timeout"`
