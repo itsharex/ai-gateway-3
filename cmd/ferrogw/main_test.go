@@ -586,11 +586,11 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
 
-	created, err := store.Create("test", nil, nil)
+	created, err := store.Create(context.Background(), "test", nil, nil)
 	if err != nil {
 		t.Fatalf("create key on sqlite store: %v", err)
 	}
-	if _, ok := store.ValidateKey(created.Key); !ok {
+	if _, ok := store.ValidateKey(context.Background(), created.Key); !ok {
 		t.Fatalf("expected created sqlite key to validate")
 	}
 }
@@ -659,7 +659,7 @@ func TestCreateConfigManagerFromEnv_SQLitePersistence(t *testing.T) {
 	if backend != "sqlite" {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
-	if err := mgr1.ReloadConfig(updatedCfg); err != nil {
+	if err := mgr1.ReloadConfig(context.Background(), updatedCfg); err != nil {
 		t.Fatalf("reload config via manager: %v", err)
 	}
 

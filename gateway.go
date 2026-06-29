@@ -63,12 +63,16 @@ type Gateway struct {
 	hookDispatchQ      chan hookDispatch
 	hookWorkersDone    sync.WaitGroup
 	catalogRefreshDone sync.WaitGroup
-	shutdownCtx        context.Context
-	shutdownCancel     context.CancelFunc
-	circuitBreakers    map[string]*circuitbreaker.CircuitBreaker
-	discoveredModels   map[string][]providers.ModelInfo
-	latencyTracker     *latency.Tracker
-	modelIndex         modelLookupIndex
+	// shutdownCtx is a lifecycle context, not a request context. Storing it on the
+	// struct is the intended idiom here: it is created once in New, parents the
+	// gateway's background workers (hook dispatch, catalog refresh, MCP init), and
+	// is cancelled by Close() to signal shutdown. It is never a per-request context.
+	shutdownCtx      context.Context
+	shutdownCancel   context.CancelFunc
+	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
+	discoveredModels map[string][]providers.ModelInfo
+	latencyTracker   *latency.Tracker
+	modelIndex       modelLookupIndex
 
 	// obs is the observability provider used to emit per-request spans.
 	// Defaults to observability.NoOp() when SetObservability has not
@@ -101,6 +105,11 @@ type streamingContentCondition struct {
 	re *regexp.Regexp
 }
 
+// hookDispatch is a work item handed to the async hook workers over a channel.
+// Storing ctx in the struct is the documented exception to "don't store a context
+// in a struct": the context travels *with* the work item to the goroutine that
+// processes it, rather than outliving a call. See the Go blog's guidance on
+// passing request-scoped values through a pipeline.
 type hookDispatch struct {
 	ctx   context.Context
 	event events.HookEvent
@@ -838,7 +847,12 @@ func obsEventFromHook(e events.HookEvent) observability.Event {
 }
 
 // ReloadConfig validates and applies a new configuration, forcing strategy rebuild on next request.
-func (g *Gateway) ReloadConfig(cfg Config) error {
+//
+// The context satisfies the admin ConfigManager seam; the in-memory reload below
+// performs no request-scoped store/IO of its own (MCP re-initialization is
+// parented on the gateway shutdown context), so ctx is accepted but not used here.
+func (g *Gateway) ReloadConfig(ctx context.Context, cfg Config) error {
+	_ = ctx
 	if err := ValidateConfig(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
@@ -1709,10 +1723,11 @@ func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Re
 		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
 			continue
 		}
+		p50, hasSamples := g.latencyTracker.Stats(t.VirtualKey)
 		candidate := streamingLatencyCandidate{
 			key:        t.VirtualKey,
-			p50:        g.latencyTracker.P50(t.VirtualKey),
-			hasSamples: g.latencyTracker.HasSamples(t.VirtualKey),
+			p50:        p50,
+			hasSamples: hasSamples,
 		}
 		if candidate.hasSamples {
 			sampled = append(sampled, candidate)
