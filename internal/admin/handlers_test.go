@@ -501,7 +501,7 @@ func TestHealthCheck(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&result)
 	if _, ok := result["status"]; !ok {
 		t.Error("expected status field")
@@ -1183,7 +1183,7 @@ func TestLogsEndpointUsesSnakeCaseFields(t *testing.T) {
 	}
 
 	var payload struct {
-		Data []map[string]interface{} `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode logs response: %v", err)
@@ -1668,7 +1668,7 @@ func TestListProviders_NilRegistry(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var result []interface{}
+	var result []any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1707,9 +1707,9 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 				Type:    "guardrail",
 				Stage:   "before_request",
 				Enabled: true,
-				Config: map[string]interface{}{
+				Config: map[string]any{
 					"secret":        "literal-plugin-secret",
-					"blocked_words": []interface{}{"password"},
+					"blocked_words": []any{"password"},
 				},
 			},
 		},
@@ -1899,6 +1899,33 @@ func TestScrubAnyMap_NestedMap(t *testing.T) {
 	// The live config's inner map is unchanged.
 	if originalInner["api_key"] != rawValue {
 		t.Errorf("live config was mutated: originalInner[api_key] = %v", originalInner["api_key"])
+	}
+}
+
+// TestScrubAnyValue_NestedTypedComposite verifies that typed maps/slices not
+// enumerated by the concrete fast-path cases (here map[string][]string) are
+// still recursively redacted via the reflection fallback, into new containers
+// that do not alias the live config.
+func TestScrubAnyValue_NestedTypedComposite(t *testing.T) {
+	rawValue := strings.Repeat("x", 8) + "-literal-config-value"
+
+	original := map[string][]string{
+		"auth": {rawValue, "${KEEP_ENV}"},
+	}
+
+	result, ok := scrubAnyValue(original).(map[string][]string)
+	if !ok {
+		t.Fatalf("expected map[string][]string, got %T", scrubAnyValue(original))
+	}
+
+	if result["auth"][0] != redactedPlaceholder {
+		t.Errorf("literal: want %q, got %q", redactedPlaceholder, result["auth"][0])
+	}
+	if result["auth"][1] != "${KEEP_ENV}" {
+		t.Errorf("env ref: want %q, got %q", "${KEEP_ENV}", result["auth"][1])
+	}
+	if original["auth"][0] != rawValue {
+		t.Errorf("live config mutated: original[auth][0] = %q", original["auth"][0])
 	}
 }
 

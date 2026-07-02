@@ -242,6 +242,21 @@ func (s *SQLStore) Get(ctx context.Context, id string) (*APIKey, bool) {
 	return key, true
 }
 
+// lookupForMutate fetches a key by ID for lookup-before-mutate paths. Unlike
+// Get, it distinguishes a genuine not-found (wrapped ErrKeyNotFound → 404) from
+// a transient DB/scan failure (wrapped generic error → 500) so a database
+// outage is never reported to callers as a 404.
+func (s *SQLStore) lookupForMutate(ctx context.Context, id string) (*APIKey, error) {
+	key, err := s.scanOne(ctx, s.stmtGetByID, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup key %s: %w", id, err)
+	}
+	return key, nil
+}
+
 // List returns all API keys with masked key values.
 func (s *SQLStore) List(ctx context.Context) []*APIKey {
 	q := `
@@ -263,9 +278,7 @@ FROM api_keys`
 			continue
 		}
 		masked := *k
-		if len(masked.Key) > 8 {
-			masked.Key = masked.Key[:8] + "..."
-		}
+		masked.Key = maskKey(masked.Key)
 		keys = append(keys, &masked)
 	}
 	return keys
@@ -280,16 +293,16 @@ func (s *SQLStore) Revoke(ctx context.Context, id string) error {
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return nil
 }
 
 // Update modifies API key metadata (name/scopes).
 func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []string) (*APIKey, error) {
-	current, ok := s.Get(ctx, id)
-	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+	current, err := s.lookupForMutate(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
 	if name != "" {
@@ -309,9 +322,7 @@ func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []
 	}
 
 	masked := *current
-	if len(masked.Key) > 8 {
-		masked.Key = masked.Key[:8] + "..."
-	}
+	masked.Key = maskKey(masked.Key)
 	return &masked, nil
 }
 
@@ -328,7 +339,7 @@ func (s *SQLStore) SetExpiration(ctx context.Context, id string, expiresAt *time
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return nil
 }
@@ -341,7 +352,7 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return nil
 }
@@ -393,12 +404,12 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
-	updated, ok := s.Get(ctx, id)
-	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+	updated, err := s.lookupForMutate(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	return updated, nil
 }
@@ -408,7 +419,7 @@ func (s *SQLStore) scanOne(ctx context.Context, stmt *sql.Stmt, arg any) (*APIKe
 }
 
 func scanAPIKey(scanner interface {
-	Scan(dest ...interface{}) error
+	Scan(dest ...any) error
 }) (*APIKey, error) {
 	var (
 		k         APIKey

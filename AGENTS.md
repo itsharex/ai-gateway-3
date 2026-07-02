@@ -24,6 +24,12 @@
 
 ---
 
+## Public-Facing Wording
+
+Keep all public-facing text — commit messages, godocs, `CHANGELOG.md`, `ROADMAP.md`, and GitHub issues/PRs — **neutral and outcome-focused**. Do **not** reference internal tooling, code-review services, AI assistants, private decisions, or how the change was produced; describe *what* changed and *why* it matters to users. Commit messages stay short and imperative; godocs stay brief with no meta-commentary or disclaimers.
+
+---
+
 ## Build, Test, and Run Commands
 
 ```bash
@@ -140,7 +146,7 @@ ai-gateway/
 
 ## Architecture & Design Patterns
 
-- **Strategy Pattern**: Routing strategies (`Single`, `Fallback`, `LoadBalance`, `LeastLatency`, `CostOptimized`, `Conditional`) all implement `Strategy` interface in `internal/strategies/`
+- **Strategy Pattern**: Routing strategies (`Single`, `Fallback`, `LoadBalance`, `LeastLatency`, `CostOptimized`, `Conditional`, `ContentBased`, `ABTest`) all implement `Strategy` interface in `internal/strategies/`
 - **Self-Describing Factory**: Each provider has a `ProviderEntry` in `providers/providers_list.go` — no `main.go` changes needed to add a provider
 - **Two-Mode Provider Init**: `ProviderConfigFromEnv` (OSS self-hosted) or direct `ProviderConfig` map (cloud/tenant credential injection)
 - **Plugin Middleware**: `plugin/manager.go` runs plugins at `before_request`, `after_request`, `on_error` stages

@@ -4,9 +4,12 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a>
 </p>
 
-<h1 align="center">
-  <img src="docs/logo.png" alt="Ferro Labs AI Gateway" height="60" align="absmiddle" /> Ferro Labs AI Gateway
-</h1>
+<table border="0" cellspacing="0" cellpadding="0"><tr>
+  <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI Gateway" width="64" /></td>
+  <td align="center"><h1>Ferro Labs AI Gateway</h1></td>
+</tr><tr>
+  <td align="center"><strong>Open-Source, OpenAI-Compatible LLM Gateway</strong></td>
+</tr></table>
 
 **High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
 
@@ -25,7 +28,10 @@
 [![Code Scanning](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml/badge.svg)](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg?url=https%3A%2F%2Fdeepwiki.com%2Fferro-labs%2Fai-gateway)](https://deepwiki.com/ferro-labs/ai-gateway)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/ferro-labs)](https://artifacthub.io/packages/search?org=ferro-labs)
+[![Docs](https://img.shields.io/badge/docs-ferrolabs.ai-2ea44f)](https://docs.ferrolabs.ai)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
+
+📖 **Documentation:** [docs.ferrolabs.ai](https://docs.ferrolabs.ai)
 
 🔀 **30 providers, 2,500+ models — one API**<br/>
 ⚡ **13,925 RPS at 1,000 concurrent users**<br/>
@@ -130,7 +136,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
-## Why Ferro Labs
+## Why Ferro Labs AI Gateway
 
 Most AI gateways are Python proxies that crack under load or JavaScript services that eat memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
 

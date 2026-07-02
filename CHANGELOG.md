@@ -5,7 +5,51 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.8] — Unreleased
+## [1.1.9] — 2026-07-02
+
+Quality & maintainability release. Scopes per-key rate-limit and budget enforcement to the authenticated key, hardens the budget soft cap against concurrent lost updates, fixes a set of gateway routing/observability and provider streaming correctness issues, and lands a large behaviour-preserving internal refactor plus CI supply-chain hardening. No public API breaks relative to v1.1.8. Closes [#261](https://github.com/ferro-labs/ai-gateway/issues/261).
+
+### Fixed
+
+- **Per-key rate-limit and budget scoping**: the authenticated key's stable identifier is now propagated from the auth layer into the plugin pipeline, so `key_rpm` and per-key budget limits apply per caller instead of sharing a single empty-key bucket. The raw bearer secret is never exposed — only the opaque `APIKey.ID` is used as the limit bucket. Both the non-streaming and streaming paths are covered.
+- **Budget soft-cap atomicity**: per-key spend is now recorded through a single atomic read-modify-write under the store lock, so concurrent completions for the same key can no longer lose an increment. The before-request check is a documented **soft** cap — a bounded number of in-flight requests may collectively overshoot by their actual costs, with no reservation and therefore no leak on error/cancel/circuit-open.
+- **MCP response size bound**: successful MCP JSON-RPC responses are now capped at 10 MiB. An MCP server is an untrusted-content boundary; without a limit a buggy, compromised, or MITM'd server could return an unbounded body and drive gateway memory exhaustion.
+- **Admin key error status**: a genuine not-found still returns HTTP 404, but a transient or internal key-store failure (e.g. a database outage) now returns 500 instead of being masked as 404, so callers can distinguish "no such key" from "store is down."
+- **Gateway success accounting for short-circuited responses**: cached and before-plugin short-circuit responses (both non-streaming and streaming) now emit gateway metrics, lifecycle hooks, and observability events consistently with normally-executed responses.
+- **Circuit-breaker state metric**: now reports the breaker's actual state after a success (closed, open, or half-open) instead of always publishing "closed".
+- **Live-discovered model routing**: a model returned by live discovery is now routable immediately, and is included in the provider's routable candidate set alongside catalog and hardcoded models.
+- **MCP tool-call loop error accounting**: failures inside the agentic tool-call loop now go through the same error accounting (metrics, logging, span, lifecycle hooks) as the initial provider call, instead of failing silently to observability.
+- **Gateway overhead accounting**: provider time spent across multi-turn MCP tool-call loops is now counted as provider time, not gateway overhead.
+- **Anthropic streaming error propagation**: mid-stream API error events are now surfaced to the caller instead of truncating the stream silently.
+- **Bedrock multimodal content**: Anthropic- and Llama-family Bedrock requests now forward multi-part message content (including images) instead of silently dropping it.
+- **Bedrock streaming correctness**: streamed choices use a consistent index, and tool calls with no arguments now report an empty argument object instead of omitting arguments.
+- **Bedrock Titan temperature**: an explicit temperature of `0` is now preserved instead of being dropped and falling back to the model default.
+- **Gemini streaming tool-call indices**: stay consistent across an entire streamed response instead of resetting on each chunk, so parallel tool calls no longer collide.
+- **Plugin configuration**: numeric plugin settings (e.g. `key_rpm`, `spend_limit_usd`) now accept large integer values as decoded from YAML.
+- **Admin config-history growth**: history is now capped to prevent unbounded memory growth on long-running gateways with frequent config reloads.
+
+### Security
+
+- **Redacted child-span errors**: error text on MCP and plugin child spans now passes through the configured `privacy_level` redaction (matching root-span behaviour) instead of being recorded raw, keeping credential-shaped material out of traces.
+- **Admin response caching**: the dashboard, health-check, and request-log endpoints now send `Cache-Control: no-store`, consistent with other admin endpoints that return sensitive data.
+- **CI credential exposure**: workflow checkout steps that don't push to the repository no longer persist git credentials for the rest of the job.
+
+### Changed
+
+- **Internal package restructuring**: several oversized files were decomposed into cohesive units and cross-provider duplication was consolidated into shared helpers, with tightened lint configuration. Behaviour-preserving — no public API, config, CLI, or HTTP contract changes.
+- **CI supply-chain hardening**: all GitHub Actions are pinned to commit SHAs (kept current by Dependabot), and CI now runs once per change — pushes trigger only on `main`, every other branch is covered by its pull request, and a concurrency group cancels superseded runs.
+- **Dependency hygiene**: dropped the stale `replace google.golang.org/grpc => v1.79.3` pin (added in v1.0.10 for CVE-2026-33186). The module graph already selects grpc **v1.81.1**, which retains that fix and picks up later patches; the pin was silently shipping the older v1.79.3 despite the manifest. No known vulnerabilities are introduced.
+- **Tracing initialization**: no longer resets a newer tracer provider when an older initialization's shutdown runs after it, and exporter resources are released correctly when tracing setup fails partway through.
+- **Observability package scope**: tracing privacy-level validation moved out of the public `observability` package into an internal helper. The public package now exposes only the stable Provider/Span/Exporter/Event seam.
+- **Bedrock Titan embeddings**: multi-input embedding requests now run concurrently instead of sequentially.
+
+### Documentation
+
+- **Docs sync** ([#261](https://github.com/ferro-labs/ai-gateway/issues/261)): ROADMAP marks v1.1.4–v1.1.8 as shipped; the routing-strategy list is now complete and consistent across the `strategies` package GoDoc and AGENTS.md (all 8 strategies); README links the documentation site; and the inaccurate "zero dependencies" phrasing was corrected.
+
+---
+
+## [1.1.8] — 2026-06-30
 
 Security-hardening release. Adds baseline HTTP security headers, a configurable request body-size limit, trusted-proxy client-IP resolution, and expanded secret redaction. Strengthens config validation and admin key safety. No public API breaks. Closes [#252](https://github.com/ferro-labs/ai-gateway/issues/252)–[#257](https://github.com/ferro-labs/ai-gateway/issues/257).
 

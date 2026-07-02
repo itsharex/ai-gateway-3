@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,10 +14,12 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
@@ -43,6 +47,13 @@ func CheckProductionSafety() error {
 	return nil
 }
 
+// defaultListenAddr is the address the HTTP server listens on when PORT is unset.
+const defaultListenAddr = ":8080"
+
+// shutdownGracePeriod bounds how long graceful shutdown waits for in-flight
+// HTTP connections to drain before returning.
+const shutdownGracePeriod = 15 * time.Second
+
 // Serve runs the full gateway server startup sequence and blocks until the
 // server shuts down.  It exits the process on fatal errors.
 func Serve() {
@@ -53,6 +64,24 @@ func Serve() {
 		os.Exit(1)
 	}
 
+	gw, srv, cfgManager, keyStore, logReader, otelShutdown := buildServer()
+	listenErr := runUntilShutdown(gw, srv)
+	gracefulShutdown(srv, gw, cfgManager, keyStore, logReader, otelShutdown, listenErr)
+}
+
+// buildServer runs the startup sequence: it loads configuration, registers
+// providers, initializes observability and the persistence stores, constructs
+// the router and HTTP server, prints the startup banner, and logs readiness.
+// It exits the process on any fatal initialization error and returns the
+// long-lived components needed to run and later shut down the server.
+func buildServer() (
+	*aigateway.Gateway,
+	*http.Server,
+	admin.ConfigManager,
+	admin.Store,
+	requestlog.Reader,
+	gwotel.ShutdownFunc,
+) {
 	cfg := LoadConfig()
 	registry := RegisterProviders()
 	masterKey := ResolveMasterKey()
@@ -118,7 +147,7 @@ func Serve() {
 
 	r := httpserver.NewRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, masterKey, trustedProxies)
 
-	addr := ":8080"
+	addr := defaultListenAddr
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
@@ -134,6 +163,13 @@ func Serve() {
 		"request_log_store", logReaderBackend,
 	)
 
+	return gw, srv, cfgManager, keyStore, logReader, otelShutdown
+}
+
+// runUntilShutdown starts the HTTP server and optional live model discovery,
+// then blocks until an OS signal or a fatal listen error. It returns the listen
+// error observed, if any.
+func runUntilShutdown(gw *aigateway.Gateway, srv *http.Server) error {
 	// Run the server in a goroutine so the main goroutine can block on signal
 	// or a fatal listen error.
 	serveErr := make(chan error, 1)
@@ -157,16 +193,30 @@ func Serve() {
 	case <-ctx.Done():
 		logging.Logger.Info("shutdown signal received")
 	case listenErr = <-serveErr:
-		if listenErr != nil && listenErr != http.ErrServerClosed {
+		if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			logging.Logger.Error("server error", "error", listenErr)
 		}
 	}
 	stop() // release signal resources; called explicitly so os.Exit below doesn't bypass it
+	return listenErr
+}
 
+// gracefulShutdown drains the HTTP server, closes the persistence stores, and
+// flushes OTel exporters in that order, then exits the process if the server
+// terminated on a fatal listen error.
+func gracefulShutdown(
+	srv *http.Server,
+	gw *aigateway.Gateway,
+	cfgManager admin.ConfigManager,
+	keyStore admin.Store,
+	logReader requestlog.Reader,
+	otelShutdown gwotel.ShutdownFunc,
+	listenErr error,
+) {
 	// Shutdown drains active connections before returning — CloseResources must
 	// come after so in-flight requests can still reach the stores.
 	logging.Logger.Info("shutting down gracefully")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logging.Logger.Error("shutdown error", "error", err)
 	}
@@ -192,7 +242,7 @@ func Serve() {
 
 	logging.Logger.Info("server stopped")
 
-	if listenErr != nil && listenErr != http.ErrServerClosed {
+	if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 		os.Exit(1)
 	}
 }
@@ -345,13 +395,16 @@ func NewRateLimitStore() *ratelimit.Store {
 		return nil
 	}
 	rps, err := strconv.ParseFloat(rpsStr, 64)
-	if err != nil || rps <= 0 {
+	if err != nil || math.IsNaN(rps) || math.IsInf(rps, 0) || rps <= 0 {
+		logging.Logger.Warn("rate limiting disabled: RATE_LIMIT_RPS must be a positive number", "value", rpsStr)
 		return nil
 	}
 	var burst float64
 	if burstStr := os.Getenv("RATE_LIMIT_BURST"); burstStr != "" {
-		if v, err := strconv.ParseFloat(burstStr, 64); err == nil {
+		if v, err := strconv.ParseFloat(burstStr, 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 {
 			burst = v
+		} else {
+			logging.Logger.Warn("ignoring invalid RATE_LIMIT_BURST; using 0", "value", burstStr)
 		}
 	}
 	store := ratelimit.NewStore(rps, burst)
